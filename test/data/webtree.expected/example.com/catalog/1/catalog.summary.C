@@ -1,0 +1,1 @@
+{"example.com":{"system/file-system/example":[{"actions":["set name=pkg.summary value=\"Example package\""],"version":"1.0,5.11-0.1.0:20221216T051543Z"}]},"_SIGNATURE":{"sha-1":"99007e33dc955764f9d5374daea4cced1758ac6d"}}

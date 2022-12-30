@@ -1,0 +1,271 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: 0BSD
+#
+# Copyright (c) 2022 Sine Nomine Associates.
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+# REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+# AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+# INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+# LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+# OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+# PERFORMANCE OF THIS SOFTWARE.
+
+"""
+pkg.repo2webtree - Convert an IPS pkg repository into a directory tree that
+can be served as plain files from a webserver.
+"""
+
+import argparse
+import contextlib
+import gettext
+import json
+import os
+import pathlib
+import shutil
+import sys
+import tempfile
+
+import pkg
+import pkg.manifest
+import pkg.p5i
+import pkg.server.repository
+
+# Disable 'black' format nagging
+# fmt: off
+
+progname = 'pkg.repo2webtree'
+__version__ = '0.2'
+
+# If we are run with an older Python that doesn't understand f-strings, fail
+# early to try to be clearer about what the problem is.
+f"This script requires Python 3.6+ to run"  # noqa: F541
+
+
+def mkdir_p(path):
+    path.mkdir(parents=True, exist_ok=True)
+
+
+@contextlib.contextmanager
+def mkdir_open(path):
+    """
+    Creates and opens the given file path, creating parent dirs as needed.
+
+    Use as a context like so:
+
+        with mkdir_open(path) as fh:
+            fh.write(xxx)
+    """
+    mkdir_p(path.parent)
+    with open(path, 'x') as fh:
+        yield fh
+
+
+def print_gen(path):
+    print(f"creating {path}")
+
+
+def print_cp(path):
+    print(f" copying {path}")
+
+
+def print_symlink(path):
+    print(f"slinking {path}")
+
+
+class WebTree:
+    """
+    A WebTree object represents a directory tree we're creating to serve pkg
+    repository contents from a webserver. Use in a context like so, to delete a
+    partially-created dir tree if we encounter errors:
+
+        with WebTree(web_root, repo_obj) as tree:
+            tree.create()
+            tree.write_all()
+    """
+
+    _created = False
+
+    def __init__(self, root, repo):
+        self._root = root
+        self._repo = repo
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            return
+        self.delete()
+
+    def _copy_file(self, src, dest, quiet=False):
+        if not quiet:
+            print_cp(dest)
+
+        # Copy the file to a tmp path first, and then move it into place. Try
+        # to preserve attributes so we keep the mtime, to help if we're
+        # rsync'ing these files around somewhere.
+        (fd, tmp) = tempfile.mkstemp(dir=self._root, prefix=f'tmp.{dest.name}')
+        os.close(fd)
+        dest_tmp = pathlib.Path(tmp)
+
+        shutil.copyfile(src, dest_tmp)
+        shutil.copystat(src, dest_tmp)
+        dest_tmp.rename(dest)
+
+    def create(self):
+        self._root.mkdir()
+        self._created = True
+
+    def delete(self):
+        if not self._created:
+            return
+        shutil.rmtree(self._root)
+        self._created = False
+
+    def write_all(self):
+        self.write_versions()
+        self.write_status()
+        pubs = self._repo.get_publishers()
+        self.write_publishers(pubs)
+
+        for pub in pubs:
+            rstore = self._repo.get_pub_rstore(pub.prefix)
+
+            self.write_catalog(pub, rstore.catalog)
+            self.write_packages(pub, rstore)
+
+    def write_versions(self):
+        # Write out 'versions' info to
+        # versions/0/index.html
+
+        path = self._root/'versions'/'0'/'index.html'
+        print_gen(path)
+
+        with mkdir_open(path) as fh:
+            # 'pkg-server' appears to be a free-form field, but it's not clear
+            # what specifically is allowed; try to avoid whitespace to be safe.
+            fh.write(f"""\
+pkg-server {progname}-{__version__}
+publisher 0 1
+versions 0
+catalog 1
+file 1
+manifest 0
+status 0
+""")
+
+    def write_status(self):
+        # Write out 'status' info to
+        # status/0/index.html
+        status = self._repo.get_status()
+
+        path = self._root/'status'/'0'/'index.html'
+        print_gen(path)
+
+        with mkdir_open(path) as fh:
+            json.dump(status, fh)
+
+    def write_publishers(self, pubs):
+        # Write out the publisher data to
+        # publisher/0/index.html
+
+        path = self._root/'publisher'/'0'/'index.html'
+        print_gen(path)
+
+        with mkdir_open(path) as fh:
+            pkg.p5i.write(fh, pubs)
+
+    def write_catalog(self, pub, catalog):
+        # Write out the catalog files for the publisher
+        # e.g. publisher/catalog/1/catalog.attrs
+        #      publisher/catalog/1/catalog.base.C
+        # and so on
+
+        h_catdir = self._root/pub.prefix/'catalog'/'1'
+        mkdir_p(h_catdir)
+
+        cat_root = pathlib.Path(catalog.meta_root)
+
+        for partname in ('catalog.attrs', *catalog.parts.keys()):
+            self._copy_file(cat_root/partname, h_catdir/partname)
+
+    def write_packages(self, pub, rstore):
+        catalog = rstore.catalog
+        file_prefix = self._root/pub.prefix/'file'/'1'
+
+        first = True
+
+        for (fmri, _, _) in catalog.gen_packages(return_fmris=True):
+            # Write out the manifest file for the package, e.g.
+            # publisher/manifest/0/system/file-system/foo-core@1.2.3,5.11-0.1.0:20221213T081037Z
+            manifest_src = pathlib.Path(rstore.manifest(fmri))
+
+            pkg_path = fmri.get_fmri(anarchy=True, include_scheme=False)
+            manifest_dest = self._root/pub.prefix/'manifest'/'0'/pkg_path
+            mkdir_p(manifest_dest.parent)
+
+            self._copy_file(manifest_src, manifest_dest)
+
+            # Also create a symlink, e.g.
+            # publisher/manifest/0/system%2Ffile-system%2Ffoo-core@1.2.3,5.11-0.1.0:20221213T081037Z
+            # that points to the manifest file we just wrote out:
+            # system/file-system/foo-core@1.2.3,5.11-0.1.0:20221213T081037Z
+            pkg_path_link = pkg_path.replace('/', '%2F')
+            manifest_link = self._root/pub.prefix/'manifest'/'0'/pkg_path_link
+            print_symlink(manifest_link)
+            manifest_link.symlink_to(pkg_path)
+
+            # For each file in the package's manifest, copy the file contents
+            # (unless it already exists).
+            # e.g. publisher/file/1/d34dbeefd34dbeefd34dbeefd34dbeefd34dbeef
+
+            mfest = pkg.manifest.Manifest(fmri)
+            mfest.set_content(pathname=manifest_src)
+
+            # A "license" action is also a "file" for our purposes. These
+            # appear to be the only actions that reference blobs in the
+            # 'file_prefix' dir.
+            for f_act in mfest.gen_actions_by_types(['file', 'license']):
+                if first:
+                    first = False
+                    mkdir_p(file_prefix)
+
+                file_dest = file_prefix/f_act.hash
+
+                if not file_dest.exists():
+                    file_src = rstore.file(f_act.hash)
+                    self._copy_file(file_src, file_dest, quiet=True)
+
+
+def main(argv, install_gettext=True):
+    if install_gettext:
+        # Install the _() builtin function, or pkg stuff will throw exceptions.
+        gettext.install("pkg")
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--version', action='version',
+                        version=f'{progname} {__version__}')
+    parser.add_argument('repo_root', type=pathlib.Path,
+                        help="Path to the pkgrepo root directory")
+    parser.add_argument('http_root', type=pathlib.Path,
+                        help="Directory to create for serving over http")
+
+    args = parser.parse_args(argv[1:])
+
+    repo = pkg.server.repository.Repository(root=args.repo_root,
+                                            read_only=True)
+
+    with WebTree(args.http_root, repo) as tree:
+        tree.create()
+        tree.write_all()
+
+    print()
+    print(f"Repo data copied to {args.http_root}")
+
+
+if __name__ == '__main__':
+    main(sys.argv)

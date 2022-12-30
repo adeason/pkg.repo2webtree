@@ -1,0 +1,1 @@
+{"example.com":{"system/file-system/example":[{"signature-sha-1":"07cb89fec7d18fa87b18b84e7ae07093f8aa7663","version":"1.0,5.11-0.1.0:20221216T051543Z"}]},"_SIGNATURE":{"sha-1":"a33accf2372b30c0f7aea390a3ea2f172c4a8681"}}

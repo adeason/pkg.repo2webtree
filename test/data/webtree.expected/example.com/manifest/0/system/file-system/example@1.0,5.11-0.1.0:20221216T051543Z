@@ -1,0 +1,4 @@
+set name=pkg.fmri value=pkg://example.com/system/file-system/example@1.0,5.11-0.1.0:20221216T051543Z
+file a26ce416a048883cd6ca8e890f6b0a62a8031e8a chash=22863d4f90966ec99530aef8eee67cd3cc656d7c group=bin mode=0755 owner=root path=usr/bin/foo pkg.content-hash=file:sha512t_256:92fe3a9af14740d452261c5f4833810bc7183e3857306b3f61194b6b36ff0fc8 pkg.content-hash=gzip:sha512t_256:04d029367718eda42462b7706471b91d41e821c20cddd7c5e7c175f2dc761c70 pkg.csize=39 pkg.size=19
+set name=pkg.summary value="Example package"
+license 8172e3c5cf2262e2da17c04dcc92a4f1239aa0dd chash=0cf8ad3297fede22a417f1d13bbdfee62ddfc33e license="Example license" pkg.content-hash=file:sha512t_256:1ee4f1f1fa49117f7837689ed1e943a7befff0f48ddeb844a41c6e16048eadc7 pkg.content-hash=gzip:sha512t_256:28b7a0e1e3aa2e3b8a7ebdc4af6118a76adcf9ce4fb67a4d46f00a978ad3f75b pkg.csize=41 pkg.size=21

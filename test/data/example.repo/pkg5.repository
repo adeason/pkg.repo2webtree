@@ -1,0 +1,13 @@
+[publisher]
+prefix = example.com
+
+[repository]
+version = 4
+trust-anchor-directory = /etc/certs/CA/
+signature-required-names = []
+check-certificate-revocation = False
+description = Example
+
+[CONFIGURATION]
+version = 4
+
